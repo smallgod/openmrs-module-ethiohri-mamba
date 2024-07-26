@@ -14,6 +14,8 @@ BEGIN
 
     DECLARE cd4_count_condition VARCHAR(255);
     DECLARE age_group_cols VARCHAR(5000);
+    DECLARE view_to_store_results VARCHAR(255);
+    DECLARE date_condition VARCHAR(1000);
 
     SET session group_concat_max_len = 20000;
 
@@ -30,6 +32,10 @@ BEGIN
     END IF;
 
     IF IS_COURSE_AGE_GROUP THEN
+        -- view to store tx_new datim coarse age group results
+        SET view_to_store_results = 'mamba_view_datim_tx_new_coarse_agegroup';
+
+        -- coarse age group columns
         SELECT GROUP_CONCAT(DISTINCT
                             CONCAT(
                                     'MAX(CASE WHEN coarse_age_group = ''',
@@ -41,6 +47,10 @@ BEGIN
         INTO age_group_cols
         FROM mamba_dim_client_care_and_treatment;
     ELSE
+        -- view to store tx_new datim fine age group results
+        SET view_to_store_results = 'mamba_view_datim_tx_new_fine_agegroup';
+
+        -- fine age group columns
         SELECT GROUP_CONCAT(DISTINCT
                             CONCAT(
                                     'MAX(CASE WHEN fine_age_group = ''',
@@ -53,7 +63,21 @@ BEGIN
         FROM mamba_dim_client_care_and_treatment;
     END IF;
 
-    SET @sql = CONCAT('
+    IF REPORT_START_DATE IS NULL THEN
+        IF REPORT_END_DATE IS NULL THEN
+            SET date_condition = '1=1';
+        ELSE
+            SET date_condition = 'fact_ct.art_start_date <= ?';
+        END IF;
+    ELSE
+        IF REPORT_END_DATE IS NULL THEN
+            SET date_condition = 'fact_ct.art_start_date >= ?';
+        ELSE
+            SET date_condition = 'fact_ct.art_start_date BETWEEN ? AND ?';
+        END IF;
+    END IF;
+
+    SET @sql = CONCAT('CREATE OR REPLACE VIEW ', view_to_store_results, ' AS
         SELECT
           sex,
           ', age_group_cols, '
@@ -65,7 +89,7 @@ BEGIN
           FROM mamba_dim_client_care_and_treatment dim_ct
                 INNER JOIN analysis_db.mamba_fact_care_and_treatment fact_ct
                            ON dim_ct.client_id = fact_ct.client_id
-                WHERE fact_ct.art_start_date BETWEEN ? AND ?
+                WHERE ', date_condition, '
                   AND ', cd4_count_condition, '
                   AND dim_ct.mrn is not null and fact_ct.follow_up_status in (''Alive'', ''Restart'')
           GROUP BY sex, ', IF(IS_COURSE_AGE_GROUP, 'coarse_age_group', 'fine_age_group'), '
@@ -76,9 +100,23 @@ BEGIN
         ');
 
     PREPARE stmt FROM @sql;
-    SET @start_date = REPORT_START_DATE;
-    SET @end_date = REPORT_END_DATE;
-    EXECUTE stmt USING @start_date, @end_date;
+    IF REPORT_START_DATE IS NULL THEN
+        IF REPORT_END_DATE IS NULL THEN
+            EXECUTE stmt;
+        ELSE
+            SET @end_date = REPORT_END_DATE;
+            EXECUTE stmt USING @end_date;
+        END IF;
+    ELSE
+        IF REPORT_END_DATE IS NULL THEN
+            SET @start_date = REPORT_START_DATE;
+            EXECUTE stmt USING @start_date;
+        ELSE
+            SET @start_date = REPORT_START_DATE;
+            SET @end_date = REPORT_END_DATE;
+            EXECUTE stmt USING @start_date, @end_date;
+        END IF;
+    END IF;
     DEALLOCATE PREPARE stmt;
 
 END //
